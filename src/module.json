@@ -1,7 +1,7 @@
 {
   "id": "stems",
   "name": "Stems",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Separate audio into stems: drums, vocals, accompaniment (0.5x realtime)",
   "author": "Move Anything",
   "component_type": "tool",
