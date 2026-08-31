@@ -50,15 +50,17 @@
         "Cancel: discard all",
         "",
         "Output saved to:",
-        " Stems/<filename>/"
+        " Samples/Schwung/",
+        "  Stems/<filename>/"
       ]
     },
     {
       "title": "Output",
       "lines": [
         "Stems are saved to:",
-        " UserLibrary/Stems/",
-        "  <filename>/",
+        " UserLibrary/Samples/",
+        "  Schwung/Stems/",
+        "   <filename>/",
         "",
         "Each stem is a WAV",
         "file: drums.wav,",
