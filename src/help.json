@@ -10,8 +10,10 @@
         " - Vocals",
         " - Accompaniment",
         "",
-        "Uses SpleeterRT engine",
-        "at ~0.5x realtime speed.",
+        "Uses the SpleeterRT",
+        "engine",
+        "at about 0.5x",
+        "realtime speed.",
         "A 4-minute song takes",
         "about 2 minutes."
       ]
