@@ -2,7 +2,7 @@
   "id": "stems",
   "name": "Stems",
   "version": "0.4.0",
-  "description": "Separate audio into stems: drums, vocals, accompaniment (0.85x realtime)",
+  "description": "Separate audio into stems: drums, vocals, accompaniment (0.95x realtime)",
   "author": "Move Anything",
   "component_type": "tool",
   "tool_config": {
@@ -15,6 +15,6 @@
       "vocals",
       "accompaniment"
     ],
-    "processing_ratio": 0.85
+    "processing_ratio": 0.95
   }
 }
