@@ -4,3 +4,4 @@ test-output/
 .DS_Store
 src/engine4/
 src/separate-4stem
+build/

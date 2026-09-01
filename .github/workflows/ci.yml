@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM64 cross-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+
+      # Round-trip and mutation tests for the chunk splitter/joiner.
+      - name: Test wavchunk
+        run: python3 tests/test_wavchunk.py
+
+      # build.sh hard-fails if wavchunk is missing from the tarball, so this
+      # also covers "the helper silently didn't ship".
+      - name: Build
+        run: ./scripts/build.sh
+
+      - name: Check driver syntax
+        run: sh -n src/separate

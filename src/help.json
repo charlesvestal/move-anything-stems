@@ -11,11 +11,15 @@
         " - Accompaniment",
         "",
         "Uses the SpleeterRT",
-        "engine",
-        "at about 0.5x",
+        "engine at about 0.85x",
         "realtime speed.",
         "A 4-minute song takes",
-        "about 2 minutes."
+        "about 3.5 minutes.",
+        "",
+        "Long files are split",
+        "into 60-second parts",
+        "and rejoined, so any",
+        "length works."
       ]
     },
     {
@@ -67,8 +71,8 @@
         "vocals.wav, and",
         "accompaniment.wav",
         "",
-        "Same format as input:",
-        "44.1kHz 16-bit stereo"
+        "44.1kHz stereo,",
+        "32-bit float."
       ]
     }
   ]
