@@ -26,6 +26,12 @@ jobs:
           fi
           echo "Version check passed: $TAG_VERSION"
 
+      - name: Install ARM64 cross-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+
+      - name: Test wavchunk
+        run: python3 tests/test_wavchunk.py
+
       - name: Build
         run: ./scripts/build.sh
 

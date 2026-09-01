@@ -5,7 +5,8 @@ Separate audio files into individual stems (drums, vocals, accompaniment) direct
 ## Features
 
 - 3-stem separation: drums, vocals, accompaniment
-- ~0.5x realtime processing speed
+- ~0.85x realtime processing speed
+- Any track length — long files are chunked so memory stays bounded
 - Stem review with selective saving — keep all or pick individual stems
 - Output saved as WAV files to UserLibrary/Stems/
 
@@ -48,6 +49,37 @@ Each separation produces three WAV files:
 - `drums.wav` — percussion and drum hits
 - `vocals.wav` — vocal content
 - `accompaniment.wav` — everything else (bass, synths, guitars, etc.)
+
+44.1 kHz stereo, 32-bit float.
+
+## Long files
+
+The SpleeterRT engine holds a full-length spectrogram, so its peak RSS is
+linear in input length. Measured on device:
+
+| input | peak RSS |
+|-------|----------|
+| 30 s  | 447 MB   |
+| 60 s  | 592 MB   |
+
+That is ~302 MB + 4.83 MB per second of audio. The Move has ~1.25 GB free, so
+anything past roughly 145 s of audio used to be killed by the OOM killer — the
+driver reported it as `Exit code: 137`.
+
+Inputs longer than one chunk (60 s by default) are now split into overlapping
+chunks, separated one at a time, and rejoined by `wavchunk` with a linear
+crossfade across each 2 s overlap. Peak RSS then follows the chunk length
+instead of the track length, so a 4-minute track peaks at the same ~590 MB a
+1-minute one does.
+
+Chunk geometry can be overridden for testing with the `STEMS_CHUNK_SEC` and
+`STEMS_XFADE_SEC` environment variables.
+
+Measured against a single pass over the same 100 s of music, the chunked result
+is bit-identical for the first chunk, correlates 0.993–0.997 across the seam,
+and 0.95–0.98 through the second chunk. The second-chunk difference is not a
+seam artifact — it is the model seeing a different spectrogram context — and it
+sits 10–13 dB below the stem's own level.
 
 ## Credits
 

@@ -1,69 +1,166 @@
 #!/bin/sh
 # SpleeterRT 3-stem separation: drums, vocals, accompaniment
-# Usage: separate-rt <input.wav> <output-dir> [threads]
+# Usage: separate <input.wav> <output-dir> [threads]
 # Creates .done on success, .error on failure
+#
+# The engine holds a full-length spectrogram, so its peak RSS is linear in
+# input length — measured on device 2026-09-01: ~302 MB + 4.83 MB per second of
+# audio (30 s -> 447 MB, 60 s -> 592 MB). The Move has ~1.25 GB free, so past
+# ~145 s of audio the OOM killer takes the engine and the user sees exit 137.
+#
+# v0.3.2 tried to buy headroom with a 1 GB swapfile. That never worked once:
+# swapon(2) needs CAP_SYS_ADMIN and this script runs as uid 1000, so it failed
+# with EPERM on every device in the field — silently, because the call was
+# wrapped in `if ... 2>/dev/null`. It also left the 1 GB file behind and cost
+# ~100 s of dd on first run. That code is gone; we reclaim its file below.
+#
+# Instead, long inputs are separated in fixed-length overlapping chunks and
+# reassembled by wavchunk, so peak RSS tracks the chunk length rather than the
+# track length.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INPUT="$1"
 OUTPUT_DIR="$2"
 THREADS="${3:-2}"
 
+# Chunk geometry, in seconds. 60 s holds the engine at ~590 MB. The crossfade
+# is the overlap between adjacent chunks, long enough to hide the model's
+# different behaviour at a chunk edge.
+CHUNK_SEC="${STEMS_CHUNK_SEC:-60}"
+XFADE_SEC="${STEMS_XFADE_SEC:-2}"
+
 if [ -z "$INPUT" ] || [ -z "$OUTPUT_DIR" ]; then
-    echo "Usage: separate-rt <input.wav> <output-dir> [threads]"
+    echo "Usage: separate <input.wav> <output-dir> [threads]"
     exit 1
 fi
 
 mkdir -p "$OUTPUT_DIR"
 
-# Lower priority so Move UI stays responsive
-renice 15 $$ >/dev/null 2>&1
-
-# Enable temporary swap to avoid OOM on large files.
-# The Move has ~1.3GB free RAM; spleeter can exceed that on tracks >3 min.
-# Swap is only active during processing and removed on exit.
-SWAPFILE="/data/UserData/.stems-swap"
-SWAP_SIZE_MB=1024
-SWAP_ACTIVE=0
-
-cleanup_swap() {
-    if [ "$SWAP_ACTIVE" = "1" ]; then
-        swapoff "$SWAPFILE" 2>/dev/null
-        rm -f "$SWAPFILE"
-    fi
-}
-trap cleanup_swap EXIT
-
-if [ ! -f "$SWAPFILE" ]; then
-    dd if=/dev/zero of="$SWAPFILE" bs=1M count="$SWAP_SIZE_MB" 2>/dev/null
-    chmod 600 "$SWAPFILE"
-    mkswap "$SWAPFILE" >/dev/null 2>&1
-fi
-if swapon "$SWAPFILE" 2>/dev/null; then
-    SWAP_ACTIVE=1
-fi
+ENGINE="$SCRIPT_DIR/engine/spleeter"
+WAVCHUNK="$SCRIPT_DIR/wavchunk"
+WORK="$OUTPUT_DIR/.work"
 
 export LD_LIBRARY_PATH="$SCRIPT_DIR/engine:$LD_LIBRARY_PATH"
 
-# SpleeterRT uses full input filename (with ext) as output prefix
-FULLNAME=$(basename "$INPUT")
+# Lower priority so the Move UI stays responsive, and keep core 3 free for SPI.
+renice 15 $$ >/dev/null 2>&1
+RUNNER=""
+command -v taskset >/dev/null 2>&1 && RUNNER="taskset 0x7"
 
-# SpleeterRT writes output files to CWD, so cd to output dir
-cd "$OUTPUT_DIR"
+# Reclaim the swapfile left behind by v0.3.2-v0.3.4, which could never be
+# swapon'd and was therefore never cleaned up either.
+rm -f /data/UserData/.stems-swap
 
-# Run SpleeterRT in 3-stem mode (drums, vocals, accompaniment)
+fail() {
+    echo "$1" > "$OUTPUT_DIR/.error"
+    rm -rf "$WORK"
+    exit 1
+}
+
+ENGINE_PID=""
+on_signal() {
+    # The UI cancels by SIGTERMing this script. Without this the engine would
+    # be orphaned and keep burning three cores to produce nothing.
+    [ -n "$ENGINE_PID" ] && kill "$ENGINE_PID" 2>/dev/null
+    rm -rf "$WORK"
+    exit 143
+}
+trap on_signal TERM INT
+
+# Run the engine on $1 (an absolute path), writing its outputs into the CWD.
 # Args: <threads> <timeStep> <binLimit> <stems> <audioFile>
-# timeStep=256 + binLimit=2048 = full spectrum, finer time resolution
-"$SCRIPT_DIR/engine/spleeter" "$THREADS" 256 2048 3 "$INPUT" 2>&1
-EXIT_CODE=$?
+# timeStep=256 + binLimit=2048 = full spectrum, finer time resolution.
+run_engine() {
+    $RUNNER "$ENGINE" "$THREADS" 256 2048 3 "$1" 2>&1 &
+    ENGINE_PID=$!
+    wait "$ENGINE_PID"
+    ENGINE_RC=$?
+    ENGINE_PID=""
+    return $ENGINE_RC
+}
 
-if [ $EXIT_CODE -eq 0 ]; then
-    # Rename outputs to consistent names
+engine_error() {
+    # 137 = 128+9 = SIGKILL, which on this device means the OOM killer.
+    if [ "$1" -eq 137 ]; then
+        fail "Out of memory (137)"
+    else
+        fail "Exit code: $1"
+    fi
+}
+
+rm -rf "$WORK"
+
+INFO=$("$WAVCHUNK" info "$INPUT" 2>&1) || fail "Cannot read input WAV"
+FRAMES=""
+RATE=""
+for kv in $INFO; do
+    case "$kv" in
+        frames=*) FRAMES="${kv#frames=}" ;;
+        rate=*)   RATE="${kv#rate=}" ;;
+    esac
+done
+[ -n "$FRAMES" ] && [ -n "$RATE" ] && [ "$RATE" -gt 0 ] || fail "Cannot read input WAV"
+
+CHUNK_FRAMES=$((CHUNK_SEC * RATE))
+XFADE_FRAMES=$((XFADE_SEC * RATE))
+
+if [ "$FRAMES" -le "$CHUNK_FRAMES" ]; then
+    # Short enough to separate in one pass — the engine's own output naming
+    # uses the full input filename, extension included.
+    FULLNAME=$(basename "$INPUT")
+    cd "$OUTPUT_DIR" || fail "Cannot enter output dir"
+    run_engine "$INPUT" || engine_error $?
+
     [ -f "${FULLNAME}_Drum.wav" ]          && mv "${FULLNAME}_Drum.wav" "drums.wav"
     [ -f "${FULLNAME}_Vocal.wav" ]         && mv "${FULLNAME}_Vocal.wav" "vocals.wav"
     [ -f "${FULLNAME}_Accompaniment.wav" ] && mv "${FULLNAME}_Accompaniment.wav" "accompaniment.wav"
     touch "$OUTPUT_DIR/.done"
-else
-    echo "Exit code: $EXIT_CODE" > "$OUTPUT_DIR/.error"
+    exit 0
 fi
 
-exit $EXIT_CODE
+# --- chunked path ---
+#
+# Intermediates live in $OUTPUT_DIR/.work rather than $OUTPUT_DIR, because the
+# shadow UI counts every *.wav in the output directory as a finished stem and
+# offers them all for review.
+mkdir -p "$WORK" || fail "Cannot create work dir"
+
+CHUNKS=$("$WAVCHUNK" split "$INPUT" "$WORK" "$CHUNK_FRAMES" "$XFADE_FRAMES" 2>&1) || fail "Split failed"
+[ -n "$CHUNKS" ] || fail "Split produced nothing"
+
+cd "$WORK" || fail "Cannot enter work dir"
+
+IDX=0
+for line in $(echo "$CHUNKS" | cut -d' ' -f1); do
+    NAME="$line"
+    run_engine "$WORK/$NAME" || engine_error $?
+
+    N=$(printf "%03d" "$IDX")
+    mv "${NAME}_Drum.wav"          "drum_$N.wav"    || fail "Engine produced no drums"
+    mv "${NAME}_Vocal.wav"         "vocal_$N.wav"   || fail "Engine produced no vocals"
+    mv "${NAME}_Accompaniment.wav" "accomp_$N.wav"  || fail "Engine produced no accompaniment"
+
+    # Free the chunk as we go; the stems are several times its size.
+    rm -f "$NAME"
+    IDX=$((IDX + 1))
+done
+
+for stem in drum:drums vocal:vocals accomp:accompaniment; do
+    PREFIX="${stem%%:*}"
+    OUTNAME="${stem##*:}"
+    PARTS=""
+    I=0
+    while [ "$I" -lt "$IDX" ]; do
+        PARTS="$PARTS $WORK/${PREFIX}_$(printf "%03d" "$I").wav"
+        I=$((I + 1))
+    done
+    # shellcheck disable=SC2086
+    "$WAVCHUNK" join "$OUTPUT_DIR/$OUTNAME.wav" "$XFADE_FRAMES" $PARTS \
+        || fail "Join failed: $OUTNAME"
+    # Drop this stem's parts before joining the next, to keep disk use flat.
+    rm -f "$WORK/${PREFIX}_"*.wav
+done
+
+rm -rf "$WORK"
+touch "$OUTPUT_DIR/.done"
+exit 0
